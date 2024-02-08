@@ -123,6 +123,7 @@ jobs:
       pre_release: ${{ steps.release_details.outputs.pre_release }}
 
   setup_flatpak_matrix:
+    if: false
     name: Setup Flatpak Matrix
     runs-on: ubuntu-latest
     steps:
@@ -149,6 +150,7 @@ jobs:
       matrix: ${{ steps.flatpak_matrix.outputs.matrix }}
 
   build_linux_flatpak:
+    if: false
     name: Linux Flatpak
     runs-on: ubuntu-22.04
     needs: [setup_release, setup_flatpak_matrix]
@@ -271,6 +273,7 @@ jobs:
           prerelease: ${{ needs.setup_release.outputs.pre_release }}
 
   build_linux:
+    if: false
     name: Linux ${{ matrix.type }}
     runs-on: ubuntu-${{ matrix.dist }}
     needs: [check_changelog, setup_release]
@@ -504,6 +507,7 @@ jobs:
           prerelease: ${{ needs.setup_release.outputs.pre_release }}
 
   build_mac:
+    if: false
     name: MacOS
     runs-on: macos-11
     needs: [check_changelog, setup_release]
@@ -616,6 +620,7 @@ jobs:
           prerelease: ${{ needs.setup_release.outputs.pre_release }}
 
   build_mac_port:
+    if: false
     name: Macports
     needs: [check_changelog, setup_release]
     runs-on: macos-11
