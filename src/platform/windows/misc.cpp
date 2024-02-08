@@ -229,60 +229,90 @@ namespace platf {
     HANDLE userToken;
     TOKEN_ELEVATION_TYPE elevationType;
     DWORD dwSize;
+    DWORD dwSessionCount;
 
-    // Get the session ID of the active console session
-    consoleSessionId = WTSGetActiveConsoleSessionId();
-    if (0xFFFFFFFF == consoleSessionId) {
-      // If there is no active console session, log a warning and return null
-      BOOST_LOG(warning) << "There isn't an active user session, therefore it is not possible to execute commands under the users profile.";
-      return nullptr;
-    }
+    WTS_SESSION_INFO *pSession = NULL;
 
-    // Get the user token for the active console session
-    if (!WTSQueryUserToken(consoleSessionId, &userToken)) {
-      BOOST_LOG(debug) << "QueryUserToken failed, this would prevent commands from launching under the users profile.";
-      return nullptr;
-    }
-
-    // We need to know if this is an elevated token or not.
-    // Get the elevation type of the user token
-    // Elevation - Default: User is not an admin, UAC enabled/disabled does not matter.
-    // Elevation - Limited: User is an admin, has UAC enabled.
-    // Elevation - Full:    User is an admin, has UAC disabled.
-    if (!GetTokenInformation(userToken, TokenElevationType, &elevationType, sizeof(TOKEN_ELEVATION_TYPE), &dwSize)) {
-      BOOST_LOG(debug) << "Retrieving token information failed: " << GetLastError();
-      CloseHandle(userToken);
-      return nullptr;
-    }
-
-    // User is currently not an administrator
-    // The documentation for this scenario is conflicting, so we'll double check to see if user is actually an admin.
-    if (elevated && (elevationType == TokenElevationTypeDefault && !IsUserAdmin(userToken))) {
-      // We don't have to strip the token or do anything here, but let's give the user a warning so they're aware what is happening.
-      BOOST_LOG(warning) << "This command requires elevation and the current user account logged in does not have administrator rights. "
-                         << "For security reasons Sunshine will retain the same access level as the current user and will not elevate it.";
-    }
-
-    // User has a limited token, this means they have UAC enabled and is an Administrator
-    if (elevated && elevationType == TokenElevationTypeLimited) {
-      TOKEN_LINKED_TOKEN linkedToken;
-      // Retrieve the administrator token that is linked to the limited token
-      if (!GetTokenInformation(userToken, TokenLinkedToken, reinterpret_cast<void *>(&linkedToken), sizeof(TOKEN_LINKED_TOKEN), &dwSize)) {
-        // If the retrieval failed, log an error message and return null
-        BOOST_LOG(error) << "Retrieving linked token information failed: " << GetLastError();
-        CloseHandle(userToken);
-
-        // There is no scenario where this should be hit, except for an actual error.
+    if (!WTSEnumerateSessions(WTS_CURRENT_SERVER_HANDLE, 0, 1, &pSession, &dwSessionCount)) {
+        BOOST_LOG(warning) << "EnumerateSessions failed, this would prevent commands from launching under the users profile.";
         return nullptr;
-      }
-
-      // Since we need the elevated token, we'll replace it with their administrative token.
-      CloseHandle(userToken);
-      userToken = linkedToken.LinkedToken;
     }
 
-    // We don't need to do anything for TokenElevationTypeFull users here, because they're already elevated.
-    return userToken;
+    for (size_t i = 0; i < dwSessionCount; i++) {
+        consoleSessionId = pSession[i].SessionId;
+
+        WTS_CONNECTSTATE_CLASS wts_connect_state = WTSDisconnected;
+        WTS_CONNECTSTATE_CLASS* ptr_wts_connect_state = NULL;
+
+        DWORD bytes_returned = 0;
+        if (::WTSQuerySessionInformation(
+            WTS_CURRENT_SERVER_HANDLE,
+            consoleSessionId,
+            WTSConnectState,
+            reinterpret_cast<LPTSTR*>(&ptr_wts_connect_state),
+            &bytes_returned)) {
+                wts_connect_state = *ptr_wts_connect_state;
+                ::WTSFreeMemory(ptr_wts_connect_state);
+                if (wts_connect_state != WTSActive) continue;
+        }
+        else {
+            BOOST_LOG(debug) << "QuerySessionInformation failed, looking for another available session.";
+            continue;
+        }
+
+        if (!WTSQueryUserToken(consoleSessionId, &userToken)) {
+            BOOST_LOG(debug) << "QueryUserToken failed, looking for another available session.";
+            continue;
+        }
+
+
+        // We need to know if this is an elevated token or not.
+        // Get the elevation type of the user token
+        // Elevation - Default: User is not an admin, UAC enabled/disabled does not matter.
+        // Elevation - Limited: User is an admin, has UAC enabled.
+        // Elevation - Full:    User is an admin, has UAC disabled.
+        if (!GetTokenInformation(userToken, TokenElevationType, &elevationType, sizeof(TOKEN_ELEVATION_TYPE), &dwSize)) {
+            BOOST_LOG(debug) << "Retrieving token information failed: " << GetLastError() << ", looking for another available session.";
+            CloseHandle(userToken);
+            continue;
+        }
+
+        // User is currently not an administrator
+        // The documentation for this scenario is conflicting, so we'll double check to see if user is actually an admin.
+        if (elevated && (elevationType == TokenElevationTypeDefault && !IsUserAdmin(userToken))) {
+            // We don't have to strip the token or do anything here, but let's give the user a warning so they're aware what is happening.
+            BOOST_LOG(warning) << "This command requires elevation and the current user account logged in does not have administrator rights. "
+                            << "For security reasons Sunshine will retain the same access level as the current user and will not elevate it.";
+        }
+
+        // User has a limited token, this means they have UAC enabled and is an Administrator
+        if (elevated && elevationType == TokenElevationTypeLimited) {
+            TOKEN_LINKED_TOKEN linkedToken;
+            // Retrieve the administrator token that is linked to the limited token
+            if (!GetTokenInformation(userToken, TokenLinkedToken, reinterpret_cast<void *>(&linkedToken), sizeof(TOKEN_LINKED_TOKEN), &dwSize)) {
+                // If the retrieval failed, log an error message and return null
+                BOOST_LOG(error) << "Retrieving linked token information failed: " << GetLastError();
+                CloseHandle(userToken);
+
+                // There is no scenario where this should be hit, except for an actual error.
+                return nullptr;
+            }
+
+            // Since we need the elevated token, we'll replace it with their administrative token.
+            CloseHandle(userToken);
+            userToken = linkedToken.LinkedToken;
+
+            WTSFreeMemory(pSession);
+
+            // We don't need to do anything for TokenElevationTypeFull users here, because they're already elevated.
+            return userToken;
+        }
+    }
+
+    WTSFreeMemory(pSession);
+
+    BOOST_LOG(warning) << "No valid token retrieveed, this would prevent commands from launching under the users profile.";
+    return nullptr;
   }
 
   bool
